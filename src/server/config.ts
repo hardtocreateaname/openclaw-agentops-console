@@ -1,4 +1,5 @@
 import path from 'node:path'
+import os from 'node:os'
 
 import {
   ConnectorCapability,
@@ -15,6 +16,10 @@ export const DEFAULT_POLICY_STORE_PATH = path.resolve(
   'var',
   'openclaw-agentops-policies.json',
 )
+export const DEFAULT_AGENTOPS_SOURCE_MODE = 'fixture'
+export const DEFAULT_OPENCLAW_HISTORY_PATH = path.join(os.homedir(), '.codex', 'history.jsonl')
+export const DEFAULT_OPENCLAW_TUI_LOG_PATH = path.join(os.homedir(), '.codex', 'log', 'codex-tui.log')
+export const DEFAULT_OPENCLAW_VERSION_PATH = path.join(os.homedir(), '.codex', 'version.json')
 
 export const DEFAULT_MODEL_POLICY: ModelPolicy = {
   provider: ModelProvider.OpenAI,
@@ -89,12 +94,27 @@ export interface ServerConfig {
   port: number
   policyStorePath: string
   defaultPolicy: ModelPolicy
+  sourceMode: 'real' | 'fixture'
+  openClaw: {
+    historyPath: string
+    tuiLogPath: string
+    versionPath: string
+  }
 }
 
 export function loadServerConfig(): ServerConfig {
+  const requestedSourceMode = process.env.AGENTOPS_SOURCE_MODE
+  const sourceMode = requestedSourceMode === 'real' ? 'real' : 'fixture'
+
   return {
     port: Number(process.env.PORT ?? DEFAULT_SERVER_PORT),
     policyStorePath: process.env.OPENCLAW_POLICY_STORE_PATH ?? DEFAULT_POLICY_STORE_PATH,
     defaultPolicy: DEFAULT_MODEL_POLICY,
+    sourceMode,
+    openClaw: {
+      historyPath: process.env.OPENCLAW_HISTORY_PATH ?? DEFAULT_OPENCLAW_HISTORY_PATH,
+      tuiLogPath: process.env.OPENCLAW_TUI_LOG_PATH ?? DEFAULT_OPENCLAW_TUI_LOG_PATH,
+      versionPath: process.env.OPENCLAW_VERSION_PATH ?? DEFAULT_OPENCLAW_VERSION_PATH,
+    },
   }
 }

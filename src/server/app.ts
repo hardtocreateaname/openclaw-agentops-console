@@ -2,10 +2,14 @@ import express from 'express'
 
 import { EventKind, type ModelPolicy, type NormalizedEvent } from '../shared/types'
 import { DEFAULT_MODEL_POLICY, DEFAULT_POLICY_LAYERS, loadServerConfig } from './config'
+import { createOpenClawAcpConnector } from './connectors/openclaw-acp'
+import { createOpenClawSessionsConnector } from './connectors/openclaw-sessions'
+import { createOpenClawSubagentsConnector } from './connectors/openclaw-subagents'
 import { createOpenClawAcpFixtureConnector } from './connectors/fixture/openclaw-acp-fixture'
 import { createOpenClawSessionsFixtureConnector } from './connectors/fixture/openclaw-sessions-fixture'
 import { createOpenClawSubagentsFixtureConnector } from './connectors/fixture/openclaw-subagents-fixture'
 import type { ConnectorAdapter } from './connectors/types'
+import { listOpenClawEventSnapshots } from './integrations/openclaw-sources'
 import { createAgentsRouter } from './routes/agents'
 import { createEventsRouter } from './routes/events'
 import { createPoliciesRouter } from './routes/policies'
@@ -23,13 +27,32 @@ export async function createApp(options: CreateAppOptions = {}): Promise<express
   const config = loadServerConfig()
   const now = options.now ?? (() => new Date().toISOString())
   const registry = new Registry()
+  const warnOnSourceFailure = (message: string, error: unknown) => {
+    const detail = error instanceof Error ? error.message : String(error)
+    console.warn(`[agentops] ${message}: ${detail}`)
+  }
   const connectors =
     options.connectors ??
-    [
-      createOpenClawSessionsFixtureConnector(),
-      createOpenClawSubagentsFixtureConnector(),
-      createOpenClawAcpFixtureConnector(),
-    ]
+    (config.sourceMode === 'real'
+      ? [
+          createOpenClawSessionsConnector({
+            onWarning: warnOnSourceFailure,
+            sourcesConfig: config.openClaw,
+          }),
+          createOpenClawSubagentsConnector({
+            onWarning: warnOnSourceFailure,
+            sourcesConfig: config.openClaw,
+          }),
+          createOpenClawAcpConnector({
+            onWarning: warnOnSourceFailure,
+            sourcesConfig: config.openClaw,
+          }),
+        ]
+      : [
+          createOpenClawSessionsFixtureConnector(),
+          createOpenClawSubagentsFixtureConnector(),
+          createOpenClawAcpFixtureConnector(),
+        ])
   const policyStore =
     options.policyStore ??
     createPolicyStore({
@@ -65,6 +88,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<express
     connector.subscribe?.((event) => {
       appendEvent(eventFeed, event)
     })
+  }
+
+  if (options.connectors === undefined && config.sourceMode === 'real') {
+    try {
+      const sourceEvents = await listOpenClawEventSnapshots(config.openClaw)
+
+      for (const event of sourceEvents) {
+        appendEvent(eventFeed, event)
+      }
+    } catch (error) {
+      warnOnSourceFailure('OpenClaw event source unavailable', error)
+    }
   }
 
   eventFeed.sort(sortEventsDescending)
