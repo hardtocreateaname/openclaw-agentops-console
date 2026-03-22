@@ -1,14 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 
-function App() {
-  return (
-    <main>
-      <h1>OpenClaw AgentOps Console</h1>
-      <p>Shared contracts are scaffolded. UI slices land next.</p>
-    </main>
-  )
-}
+import { App } from './App'
+import './styles.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
