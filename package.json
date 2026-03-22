@@ -14,7 +14,7 @@
     "build": "tsc --noEmit && vite build",
     "test": "npm run test:server && npm run test:client",
     "test:server": "vitest run src/shared/schemas.test.ts src/server/**/*.test.ts",
-    "test:client": "vitest run --passWithNoTests --environment jsdom src/client"
+    "test:client": "vitest run --environment jsdom src/client/**/*.test.tsx"
   },
   "dependencies": {
     "express": "^4.21.2",

@@ -1,23 +1,32 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import { getHealth } from './api'
+import { AgentDetailPage } from './pages/AgentDetailPage'
 import { AgentsPage } from './pages/AgentsPage'
 import { OverviewPage } from './pages/OverviewPage'
+import { PoliciesPage } from './pages/PoliciesPage'
 
-type AppView = 'overview' | 'agents'
+type AppView = 'overview' | 'agents' | 'agent-detail' | 'policies'
+type NavView = 'overview' | 'agents' | 'policies'
 
-const NAV_ITEMS: Array<{ id: AppView; label: string; href: string }> = [
+interface AppRoute {
+  view: AppView
+  agentId?: string
+}
+
+const NAV_ITEMS: Array<{ id: NavView; label: string; href: string }> = [
   { id: 'overview', label: 'Overview', href: '#/overview' },
   { id: 'agents', label: 'Agents', href: '#/agents' },
+  { id: 'policies', label: 'Policies', href: '#/policies' },
 ]
 
 export function App() {
-  const [view, setView] = useState<AppView>(() => readViewFromHash(window.location.hash))
+  const [route, setRoute] = useState<AppRoute>(() => readRouteFromHash(window.location.hash))
   const [apiHealthy, setApiHealthy] = useState<boolean | null>(null)
 
   useEffect(() => {
     const onHashChange = () => {
-      setView(readViewFromHash(window.location.hash))
+      setRoute(readRouteFromHash(window.location.hash))
     }
 
     window.addEventListener('hashchange', onHashChange)
@@ -56,14 +65,20 @@ export function App() {
   }, [])
 
   const content = useMemo(() => {
-    switch (view) {
+    switch (route.view) {
+      case 'agent-detail':
+        return <AgentDetailPage agentId={route.agentId ?? ''} />
       case 'agents':
         return <AgentsPage />
+      case 'policies':
+        return <PoliciesPage />
       case 'overview':
       default:
         return <OverviewPage />
     }
-  }, [view])
+  }, [route])
+
+  const activeNavId: NavView = route.view === 'agent-detail' ? 'agents' : route.view
 
   return (
     <div className="app-shell">
@@ -83,12 +98,17 @@ export function App() {
           {NAV_ITEMS.map((item) => (
             <a
               key={item.id}
-              className={item.id === view ? 'app-nav__link app-nav__link--active' : 'app-nav__link'}
+              className={item.id === activeNavId ? 'app-nav__link app-nav__link--active' : 'app-nav__link'}
               href={item.href}
             >
               {item.label}
             </a>
           ))}
+          {route.view === 'agent-detail' && route.agentId ? (
+            <a className="app-nav__link app-nav__link--active" href={`#/agents/${route.agentId}`}>
+              Agent Detail
+            </a>
+          ) : null}
         </nav>
 
         <main className="app-main">{content}</main>
@@ -97,6 +117,25 @@ export function App() {
   )
 }
 
-function readViewFromHash(hash: string): AppView {
-  return hash === '#/agents' ? 'agents' : 'overview'
+function readRouteFromHash(hash: string): AppRoute {
+  const normalizedHash = hash.replace(/^#/, '')
+
+  if (normalizedHash.startsWith('/agents/')) {
+    const agentId = decodeURIComponent(normalizedHash.slice('/agents/'.length))
+
+    return {
+      view: 'agent-detail',
+      agentId,
+    }
+  }
+
+  if (normalizedHash === '/agents') {
+    return { view: 'agents' }
+  }
+
+  if (normalizedHash === '/policies') {
+    return { view: 'policies' }
+  }
+
+  return { view: 'overview' }
 }
