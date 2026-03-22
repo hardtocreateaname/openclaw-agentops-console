@@ -1,12 +1,9 @@
-import express from 'express'
+import { loadServerConfig } from './config'
+import { createApp } from './app'
 
-const app = express()
-const port = Number(process.env.PORT ?? 3000)
+const config = loadServerConfig()
+const app = await createApp()
 
-app.get('/api/health', (_request, response) => {
-  response.json({ ok: true })
-})
-
-app.listen(port, () => {
-  console.log(`OpenClaw AgentOps server listening on ${port}`)
+app.listen(config.port, () => {
+  console.log(`OpenClaw AgentOps server listening on ${config.port}`)
 })
