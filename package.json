@@ -1,0 +1,44 @@
+{
+  "name": "openclaw-agentops-console",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenClaw-first web console for agent, subagent, and runtime activity.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "tsx watch src/server/index.ts",
+    "dev:client": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "npm run test:server && npm run test:client",
+    "test:server": "vitest run src/shared/schemas.test.ts",
+    "test:client": "vitest run --passWithNoTests --environment jsdom src/client"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.2.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.13.11",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@types/supertest": "^6.0.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "jsdom": "^26.0.0",
+    "msw": "^2.7.3",
+    "supertest": "^7.1.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0",
+    "vitest": "^3.0.8"
+  }
+}
