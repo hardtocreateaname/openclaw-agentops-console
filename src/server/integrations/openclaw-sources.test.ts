@@ -95,6 +95,51 @@ describe('openclaw sources', () => {
     ])
     expect(events.every((event) => event.subjectId === 'sessions:abc123')).toBe(true)
   })
+
+  it('collapses near-duplicate session updated events from the same thread', async () => {
+    const config = await createSourcesFixture({
+      logLines: [
+        '2026-03-22T12:01:00.000Z INFO thread.id=abc123 codex.op="user_turn" session_init.is_subagent=false',
+        '2026-03-22T12:01:00.800Z INFO thread.id=abc123 codex.op="user_turn" session_init.is_subagent=false',
+        '2026-03-22T12:01:03.500Z INFO thread.id=abc123 codex.op="user_turn" session_init.is_subagent=false',
+      ],
+    })
+
+    const events = await listOpenClawEventSnapshots(config)
+
+    expect(events).toHaveLength(2)
+    expect(events.map((event) => event.kind)).toEqual([
+      EventKind.SessionUpdated,
+      EventKind.SessionUpdated,
+    ])
+    expect(events.map((event) => event.occurredAt)).toEqual([
+      '2026-03-22T12:01:03.500Z',
+      '2026-03-22T12:01:00.800Z',
+    ])
+    expect(events.every((event) => event.subjectId === 'sessions:abc123')).toBe(true)
+  })
+
+  it('keeps distinct session updated events from the same thread', async () => {
+    const config = await createSourcesFixture({
+      logLines: [
+        '2026-03-22T12:01:00.000Z INFO thread.id=abc123 codex.op="user_turn" session_init.is_subagent=false',
+        '2026-03-22T12:01:00.700Z INFO thread.id=abc123 op.dispatch.user_turn session_init.is_subagent=false',
+        '2026-03-22T12:01:01.200Z INFO thread.id=abc123 codex.op="user_turn" session_init.is_subagent=false',
+      ],
+    })
+
+    const events = await listOpenClawEventSnapshots(config)
+
+    expect(events).toHaveLength(2)
+    expect(events.map((event) => event.kind)).toEqual([
+      EventKind.SessionUpdated,
+      EventKind.SessionUpdated,
+    ])
+    expect(events.map((event) => event.occurredAt)).toEqual([
+      '2026-03-22T12:01:01.200Z',
+      '2026-03-22T12:01:00.700Z',
+    ])
+  })
 })
 
 async function createSourcesFixture(input: {

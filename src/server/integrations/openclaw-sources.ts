@@ -12,6 +12,7 @@ const MAX_EVENT_SNAPSHOTS = 50
 const SESSION_LABEL_MAX_CHARS = 48
 const PROMPT_PREVIEW_MAX_CHARS = 160
 const SESSION_STARTED_DEDUPE_WINDOW_MS = 10 * 1000
+const SESSION_UPDATED_DEDUPE_WINDOW_MS = 2 * 1000
 const RECENT_SESSION_WINDOW_MS = 15 * 60 * 1000
 const STALE_SESSION_WINDOW_MS = 6 * 60 * 60 * 1000
 
@@ -71,7 +72,13 @@ interface ParsedLogLine {
   isSubagent: boolean | null
   enabledMcpServerCount: number | null
   requiredMcpServerCount: number | null
+  dedupeFingerprint: string
   line: string
+}
+
+interface EventSnapshotCandidate {
+  event: NormalizedEvent
+  dedupeFingerprint: string
 }
 
 interface SessionSnapshotState {
@@ -219,17 +226,20 @@ export async function listOpenClawEventSnapshots(
           : EventKind.SessionStarted
 
       return {
-        id: `openclaw-log:${line.threadId}:${index}:${kind}`,
-        kind,
-        connectorId: 'sessions',
-        subjectId,
-        sessionId: subjectId,
-        agentId: null,
-        occurredAt: line.occurredAt,
-        payload: {
-          sourceKind: 'codex-log',
-          isSubagent: line.isSubagent ?? false,
+        event: {
+          id: `openclaw-log:${line.threadId}:${index}:${kind}`,
+          kind,
+          connectorId: 'sessions',
+          subjectId,
+          sessionId: subjectId,
+          agentId: null,
+          occurredAt: line.occurredAt,
+          payload: {
+            sourceKind: 'codex-log',
+            isSubagent: line.isSubagent ?? false,
+          },
         },
+        dedupeFingerprint: line.dedupeFingerprint,
       }
     })
 
@@ -286,6 +296,7 @@ function parseLogLine(line: string): ParsedLogLine | null {
     isSubagent: matchBoolean(line, /session_init\.is_subagent=(true|false)/),
     enabledMcpServerCount: matchNumber(line, /enabled_mcp_server_count=(\d+)/),
     requiredMcpServerCount: matchNumber(line, /required_mcp_server_count=(\d+)/),
+    dedupeFingerprint: normalizeLogLineForDeduplication(line),
     line,
   }
 }
@@ -398,12 +409,14 @@ function toIsoTimestamp(unixTimestampSeconds: number): string {
   return new Date(unixTimestampSeconds * 1000).toISOString()
 }
 
-function dedupeEventSnapshots(events: NormalizedEvent[]): NormalizedEvent[] {
+function dedupeEventSnapshots(events: EventSnapshotCandidate[]): NormalizedEvent[] {
   const deduped: NormalizedEvent[] = []
   const exactEventIndexes = new Map<string, number>()
   const recentSessionStartedIndexes = new Map<string, number>()
+  const recentSessionUpdatedIndexes = new Map<string, number>()
 
-  for (const event of events) {
+  for (const candidate of events) {
+    const { event, dedupeFingerprint } = candidate
     const exactKey = createEventDeduplicationKey(event)
     const exactIndex = exactEventIndexes.get(exactKey)
 
@@ -436,6 +449,30 @@ function dedupeEventSnapshots(events: NormalizedEvent[]): NormalizedEvent[] {
       recentSessionStartedIndexes.set(recentKey, deduped.length)
     }
 
+    if (event.kind === EventKind.SessionUpdated) {
+      const recentKey = createSessionUpdatedDeduplicationKey(event, dedupeFingerprint)
+      const recentIndex = recentSessionUpdatedIndexes.get(recentKey)
+
+      if (recentIndex !== undefined) {
+        const previousEvent = deduped[recentIndex]
+        const previousOccurredAt = previousEvent ? Date.parse(previousEvent.occurredAt) : Number.NaN
+        const currentOccurredAt = Date.parse(event.occurredAt)
+
+        if (
+          Number.isFinite(previousOccurredAt) &&
+          Number.isFinite(currentOccurredAt) &&
+          currentOccurredAt - previousOccurredAt <= SESSION_UPDATED_DEDUPE_WINDOW_MS
+        ) {
+          exactEventIndexes.delete(createEventDeduplicationKey(previousEvent))
+          deduped[recentIndex] = event
+          exactEventIndexes.set(exactKey, recentIndex)
+          continue
+        }
+      }
+
+      recentSessionUpdatedIndexes.set(recentKey, deduped.length)
+    }
+
     exactEventIndexes.set(exactKey, deduped.length)
     deduped.push(event)
   }
@@ -455,6 +492,26 @@ function createEventDeduplicationKey(event: NormalizedEvent): string {
 
 function createSessionStartedDeduplicationKey(event: NormalizedEvent): string {
   return [event.connectorId, event.subjectId, JSON.stringify(event.payload)].join('|')
+}
+
+function createSessionUpdatedDeduplicationKey(
+  event: NormalizedEvent,
+  dedupeFingerprint: string,
+): string {
+  return [
+    event.connectorId,
+    event.subjectId,
+    JSON.stringify(event.payload),
+    dedupeFingerprint,
+  ].join('|')
+}
+
+function normalizeLogLineForDeduplication(line: string): string {
+  return line
+    .replace(/^\d{4}-\d{2}-\d{2}T[^ ]+\s+/, '')
+    .replace(/\bthread(?:_id|\.id)=[0-9a-f-]+\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function formatPromptAsTitle(text: string): string {
