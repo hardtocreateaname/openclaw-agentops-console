@@ -11,6 +11,7 @@ const DEFAULT_VERSION_RELATIVE_PATH = ['.codex', 'version.json']
 const MAX_EVENT_SNAPSHOTS = 50
 const SESSION_LABEL_MAX_CHARS = 48
 const PROMPT_PREVIEW_MAX_CHARS = 160
+const SESSION_STARTED_DEDUPE_WINDOW_MS = 10 * 1000
 const RECENT_SESSION_WINDOW_MS = 15 * 60 * 1000
 const STALE_SESSION_WINDOW_MS = 6 * 60 * 60 * 1000
 
@@ -306,10 +307,12 @@ function summarizeSessionLabel(text: string): string {
   }
 
   const sentence = normalized.split(/[.!?](?:\s|$)/, 1)[0] ?? normalized
-  const clause = sentence.split(/[;:]/, 1)[0] ?? sentence
+  const clause =
+    sentence.split(/\b(?:while|with|based on|using|from)\b/i, 1)[0]?.split(/[;:]/, 1)[0] ?? sentence
   const compact = clause.replace(/\s+/g, ' ').trim()
+  const labelSource = compact || normalized
 
-  return truncateText(compact || normalized, SESSION_LABEL_MAX_CHARS)
+  return truncateText(formatPromptAsTitle(labelSource), SESSION_LABEL_MAX_CHARS)
 }
 
 function summarizePromptPreview(text: string): string {
@@ -396,13 +399,48 @@ function toIsoTimestamp(unixTimestampSeconds: number): string {
 }
 
 function dedupeEventSnapshots(events: NormalizedEvent[]): NormalizedEvent[] {
-  const deduped = new Map<string, NormalizedEvent>()
+  const deduped: NormalizedEvent[] = []
+  const exactEventIndexes = new Map<string, number>()
+  const recentSessionStartedIndexes = new Map<string, number>()
 
   for (const event of events) {
-    deduped.set(createEventDeduplicationKey(event), event)
+    const exactKey = createEventDeduplicationKey(event)
+    const exactIndex = exactEventIndexes.get(exactKey)
+
+    if (exactIndex !== undefined) {
+      deduped[exactIndex] = event
+      continue
+    }
+
+    if (event.kind === EventKind.SessionStarted) {
+      const recentKey = createSessionStartedDeduplicationKey(event)
+      const recentIndex = recentSessionStartedIndexes.get(recentKey)
+
+      if (recentIndex !== undefined) {
+        const previousEvent = deduped[recentIndex]
+        const previousOccurredAt = previousEvent ? Date.parse(previousEvent.occurredAt) : Number.NaN
+        const currentOccurredAt = Date.parse(event.occurredAt)
+
+        if (
+          Number.isFinite(previousOccurredAt) &&
+          Number.isFinite(currentOccurredAt) &&
+          currentOccurredAt - previousOccurredAt <= SESSION_STARTED_DEDUPE_WINDOW_MS
+        ) {
+          exactEventIndexes.delete(createEventDeduplicationKey(previousEvent))
+          deduped[recentIndex] = event
+          exactEventIndexes.set(exactKey, recentIndex)
+          continue
+        }
+      }
+
+      recentSessionStartedIndexes.set(recentKey, deduped.length)
+    }
+
+    exactEventIndexes.set(exactKey, deduped.length)
+    deduped.push(event)
   }
 
-  return [...deduped.values()]
+  return deduped
 }
 
 function createEventDeduplicationKey(event: NormalizedEvent): string {
@@ -413,6 +451,87 @@ function createEventDeduplicationKey(event: NormalizedEvent): string {
     event.occurredAt,
     JSON.stringify(event.payload),
   ].join('|')
+}
+
+function createSessionStartedDeduplicationKey(event: NormalizedEvent): string {
+  return [event.connectorId, event.subjectId, JSON.stringify(event.payload)].join('|')
+}
+
+function formatPromptAsTitle(text: string): string {
+  const words = text
+    .replace(/^[`"'([{]+/, '')
+    .replace(/[`"')\]}]+$/, '')
+    .split(/\s+/)
+    .filter((word) => word.length > 0)
+
+  const trimmedWords = trimLeadingTitleNoise(words)
+
+  if (trimmedWords.length === 0) {
+    return 'OpenClaw session'
+  }
+
+  return trimmedWords.map((word, index) => toTitleWord(word, index, trimmedWords.length)).join(' ')
+}
+
+function trimLeadingTitleNoise(words: string[]): string[] {
+  const leadingImperatives = new Set([
+    'add',
+    'build',
+    'create',
+    'debug',
+    'fix',
+    'implement',
+    'investigate',
+    'make',
+    'polish',
+    'refactor',
+    'review',
+    'update',
+    'write',
+  ])
+  const leadingQualifiers = new Set([
+    'a',
+    'an',
+    'the',
+    'focused',
+    'small',
+    'narrow',
+    'very',
+    'follow-up',
+    'followup',
+    'quick',
+    'concise',
+    'targeted',
+  ])
+
+  let startIndex = 0
+
+  if (words[0] && leadingImperatives.has(words[0].toLowerCase())) {
+    startIndex = 1
+  }
+
+  while (words[startIndex] && leadingQualifiers.has(words[startIndex].toLowerCase())) {
+    startIndex += 1
+  }
+
+  return words.slice(startIndex)
+}
+
+function toTitleWord(word: string, index: number, totalWords: number): string {
+  const lowerCasedWord = word.toLowerCase()
+  const smallWords = new Set(['a', 'an', 'and', 'as', 'at', 'for', 'in', 'of', 'on', 'or', 'the', 'to', 'with'])
+
+  if (/[A-Z]{2,}/.test(word) || /[a-z][A-Z]/.test(word)) {
+    return word
+  }
+
+  if (smallWords.has(lowerCasedWord) && index > 0 && index < totalWords - 1) {
+    return lowerCasedWord
+  }
+
+  return lowerCasedWord.replace(/(^|[-_/])([a-z])/g, (match, prefix: string, character: string) => {
+    return `${prefix}${character.toUpperCase()}`
+  })
 }
 
 function matchValue(text: string, pattern: RegExp): string | null {

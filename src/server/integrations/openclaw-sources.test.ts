@@ -38,13 +38,11 @@ describe('openclaw sources', () => {
     const sessions = await listOpenClawSessions(config)
 
     expect(sessions).toHaveLength(1)
-    expect(sessions[0]?.name).toBe('Implement a focused real-mode polish slice fo...')
+    expect(sessions[0]?.name).toBe('Real-Mode Polish Slice for OpenClaw AgentOps...')
     expect(sessions[0]?.metadata.promptPreview).toBe(
       'Implement a focused real-mode polish slice for OpenClaw AgentOps Console based on real environment findings and preserve the fuller operational preview in me...',
     )
-    expect(sessions[0]?.metadata.promptLabel).toBe(
-      'Implement a focused real-mode polish slice fo...',
-    )
+    expect(sessions[0]?.metadata.promptLabel).toBe('Real-Mode Polish Slice for OpenClaw AgentOps...')
     expect(sessions[0]?.metadata.snapshotFreshness).toBe('recent')
   })
 
@@ -71,15 +69,14 @@ describe('openclaw sources', () => {
     )
   })
 
-  it('dedupes repeated event snapshots with the same semantic payload', async () => {
-    const repeatedLine =
-      '2026-03-22T12:00:00.000Z INFO thread.id=abc123 codex.op="user_turn" session_init.is_subagent=false'
+  it('dedupes near-duplicate session started events from the same thread', async () => {
     const config = await createSourcesFixture({
       logLines: [
-        repeatedLine,
-        repeatedLine,
+        '2026-03-22T12:00:00.000Z INFO thread.id=abc123 session_init.is_subagent=false',
+        '2026-03-22T12:00:00.000Z INFO thread.id=abc123 session_init.is_subagent=false',
+        '2026-03-22T12:00:05.000Z INFO thread.id=abc123 session_init.is_subagent=false',
+        '2026-03-22T12:00:30.000Z INFO thread.id=abc123 session_init.is_subagent=false',
         '2026-03-22T12:01:00.000Z INFO thread.id=abc123 codex.op="user_turn" session_init.is_subagent=false',
-        '2026-03-22T12:02:00.000Z INFO thread.id=def456 session_init.is_subagent=true',
       ],
     })
 
@@ -87,11 +84,16 @@ describe('openclaw sources', () => {
 
     expect(events).toHaveLength(3)
     expect(events.map((event) => event.kind)).toEqual([
+      EventKind.SessionUpdated,
       EventKind.SessionStarted,
-      EventKind.SessionUpdated,
-      EventKind.SessionUpdated,
+      EventKind.SessionStarted,
     ])
-    expect(events.filter((event) => event.subjectId === 'sessions:abc123')).toHaveLength(2)
+    expect(events.map((event) => event.occurredAt)).toEqual([
+      '2026-03-22T12:01:00.000Z',
+      '2026-03-22T12:00:30.000Z',
+      '2026-03-22T12:00:05.000Z',
+    ])
+    expect(events.every((event) => event.subjectId === 'sessions:abc123')).toBe(true)
   })
 })
 
