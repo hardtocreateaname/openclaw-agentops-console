@@ -96,35 +96,38 @@ describe('openclaw sources', () => {
     expect(events.every((event) => event.subjectId === 'sessions:abc123')).toBe(true)
   })
 
-  it('collapses near-duplicate session updated events from the same thread', async () => {
+  it('collapses repeated user-turn log lines for the same submission and turn into one event', async () => {
     const config = await createSourcesFixture({
       logLines: [
-        '2026-03-22T12:01:00.000Z INFO thread.id=abc123 codex.op="user_turn" session_init.is_subagent=false',
-        '2026-03-22T12:01:00.800Z INFO thread.id=abc123 codex.op="user_turn" session_init.is_subagent=false',
-        '2026-03-22T12:01:03.500Z INFO thread.id=abc123 codex.op="user_turn" session_init.is_subagent=false',
+        '2026-03-22T12:01:00.000Z INFO thread.id=abc123 submission.id=sub-001 turn.id=turn-001 codex.op="user_turn" session_init.is_subagent=false',
+        '2026-03-22T12:01:02.800Z INFO thread.id=abc123 submission.id=sub-001 turn.id=turn-001 op.dispatch.user_turn session_init.is_subagent=false',
+        '2026-03-22T12:01:05.500Z INFO thread.id=abc123 submission.id=sub-001 turn.id=turn-001 codex.op="user_turn" session_init.is_subagent=false',
       ],
     })
 
     const events = await listOpenClawEventSnapshots(config)
 
-    expect(events).toHaveLength(2)
+    expect(events).toHaveLength(1)
     expect(events.map((event) => event.kind)).toEqual([
-      EventKind.SessionUpdated,
       EventKind.SessionUpdated,
     ])
     expect(events.map((event) => event.occurredAt)).toEqual([
-      '2026-03-22T12:01:03.500Z',
-      '2026-03-22T12:01:00.800Z',
+      '2026-03-22T12:01:05.500Z',
     ])
     expect(events.every((event) => event.subjectId === 'sessions:abc123')).toBe(true)
+    expect(events[0]?.payload).toMatchObject({
+      submissionId: 'sub-001',
+      turnId: 'turn-001',
+      turnOp: 'user_turn',
+    })
   })
 
-  it('keeps distinct session updated events from the same thread', async () => {
+  it('keeps distinct session updated events for different turn contexts in the same thread', async () => {
     const config = await createSourcesFixture({
       logLines: [
-        '2026-03-22T12:01:00.000Z INFO thread.id=abc123 codex.op="user_turn" session_init.is_subagent=false',
-        '2026-03-22T12:01:00.700Z INFO thread.id=abc123 op.dispatch.user_turn session_init.is_subagent=false',
-        '2026-03-22T12:01:01.200Z INFO thread.id=abc123 codex.op="user_turn" session_init.is_subagent=false',
+        '2026-03-22T12:01:00.000Z INFO thread.id=abc123 submission.id=sub-001 turn.id=turn-001 codex.op="user_turn" session_init.is_subagent=false',
+        '2026-03-22T12:01:00.700Z INFO thread.id=abc123 submission.id=sub-001 turn.id=turn-001 op.dispatch.user_turn session_init.is_subagent=false',
+        '2026-03-22T12:01:04.200Z INFO thread.id=abc123 submission.id=sub-002 turn.id=turn-002 codex.op="user_turn" session_init.is_subagent=false',
       ],
     })
 
@@ -136,9 +139,10 @@ describe('openclaw sources', () => {
       EventKind.SessionUpdated,
     ])
     expect(events.map((event) => event.occurredAt)).toEqual([
-      '2026-03-22T12:01:01.200Z',
+      '2026-03-22T12:01:04.200Z',
       '2026-03-22T12:01:00.700Z',
     ])
+    expect(events.map((event) => event.payload.turnId)).toEqual(['turn-002', 'turn-001'])
   })
 })
 

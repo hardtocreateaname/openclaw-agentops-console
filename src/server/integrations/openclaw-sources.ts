@@ -12,7 +12,6 @@ const MAX_EVENT_SNAPSHOTS = 50
 const SESSION_LABEL_MAX_CHARS = 48
 const PROMPT_PREVIEW_MAX_CHARS = 160
 const SESSION_STARTED_DEDUPE_WINDOW_MS = 10 * 1000
-const SESSION_UPDATED_DEDUPE_WINDOW_MS = 2 * 1000
 const RECENT_SESSION_WINDOW_MS = 15 * 60 * 1000
 const STALE_SESSION_WINDOW_MS = 6 * 60 * 60 * 1000
 
@@ -69,16 +68,20 @@ interface VersionEntry {
 interface ParsedLogLine {
   occurredAt: string
   threadId: string | null
+  submissionId: string | null
+  turnId: string | null
+  eventKind: EventKind
+  turnOp: string | null
+  logicalGroupKey: string | null
   isSubagent: boolean | null
   enabledMcpServerCount: number | null
   requiredMcpServerCount: number | null
-  dedupeFingerprint: string
   line: string
 }
 
 interface EventSnapshotCandidate {
   event: NormalizedEvent
-  dedupeFingerprint: string
+  logicalGroupKey: string | null
 }
 
 interface SessionSnapshotState {
@@ -220,15 +223,11 @@ export async function listOpenClawEventSnapshots(
     .filter((line) => line.threadId !== null)
     .map((line, index) => {
       const subjectId = `sessions:${line.threadId!}`
-      const kind =
-        line.line.includes('codex.op="user_turn"') || line.line.includes('op.dispatch.user_turn')
-          ? EventKind.SessionUpdated
-          : EventKind.SessionStarted
 
       return {
         event: {
-          id: `openclaw-log:${line.threadId}:${index}:${kind}`,
-          kind,
+          id: `openclaw-log:${line.threadId}:${index}:${line.eventKind}`,
+          kind: line.eventKind,
           connectorId: 'sessions',
           subjectId,
           sessionId: subjectId,
@@ -237,9 +236,12 @@ export async function listOpenClawEventSnapshots(
           payload: {
             sourceKind: 'codex-log',
             isSubagent: line.isSubagent ?? false,
+            submissionId: line.submissionId,
+            turnId: line.turnId,
+            turnOp: line.turnOp,
           },
         },
-        dedupeFingerprint: line.dedupeFingerprint,
+        logicalGroupKey: line.logicalGroupKey,
       }
     })
 
@@ -290,13 +292,22 @@ function parseLogLine(line: string): ParsedLogLine | null {
     return null
   }
 
+  const threadId = matchValue(line, /thread(?:_id|\.id)=(?:"([^"]+)"|([^\s]+))/i)
+  const submissionId = matchValue(line, /submission(?:_id|\.id)=(?:"([^"]+)"|([^\s]+))/i)
+  const turnId = matchValue(line, /turn(?:_id|\.id)=(?:"([^"]+)"|([^\s]+))/i)
+  const turnOp = matchTurnOperation(line)
+
   return {
     occurredAt: timestampMatch[1],
-    threadId: matchValue(line, /thread(?:_id|\.id)=([0-9a-f-]+)/i),
+    threadId,
+    submissionId,
+    turnId,
+    eventKind: inferEventKind(turnOp),
+    turnOp,
+    logicalGroupKey: createLogicalGroupKey(threadId, submissionId, turnId, turnOp),
     isSubagent: matchBoolean(line, /session_init\.is_subagent=(true|false)/),
     enabledMcpServerCount: matchNumber(line, /enabled_mcp_server_count=(\d+)/),
     requiredMcpServerCount: matchNumber(line, /required_mcp_server_count=(\d+)/),
-    dedupeFingerprint: normalizeLogLineForDeduplication(line),
     line,
   }
 }
@@ -413,10 +424,10 @@ function dedupeEventSnapshots(events: EventSnapshotCandidate[]): NormalizedEvent
   const deduped: NormalizedEvent[] = []
   const exactEventIndexes = new Map<string, number>()
   const recentSessionStartedIndexes = new Map<string, number>()
-  const recentSessionUpdatedIndexes = new Map<string, number>()
+  const logicalSessionUpdatedIndexes = new Map<string, number>()
 
   for (const candidate of events) {
-    const { event, dedupeFingerprint } = candidate
+    const { event, logicalGroupKey } = candidate
     const exactKey = createEventDeduplicationKey(event)
     const exactIndex = exactEventIndexes.get(exactKey)
 
@@ -449,28 +460,22 @@ function dedupeEventSnapshots(events: EventSnapshotCandidate[]): NormalizedEvent
       recentSessionStartedIndexes.set(recentKey, deduped.length)
     }
 
-    if (event.kind === EventKind.SessionUpdated) {
-      const recentKey = createSessionUpdatedDeduplicationKey(event, dedupeFingerprint)
-      const recentIndex = recentSessionUpdatedIndexes.get(recentKey)
+    if (event.kind === EventKind.SessionUpdated && logicalGroupKey !== null) {
+      const logicalIndex = logicalSessionUpdatedIndexes.get(logicalGroupKey)
 
-      if (recentIndex !== undefined) {
-        const previousEvent = deduped[recentIndex]
-        const previousOccurredAt = previousEvent ? Date.parse(previousEvent.occurredAt) : Number.NaN
-        const currentOccurredAt = Date.parse(event.occurredAt)
+      if (logicalIndex !== undefined) {
+        const previousEvent = deduped[logicalIndex]
 
-        if (
-          Number.isFinite(previousOccurredAt) &&
-          Number.isFinite(currentOccurredAt) &&
-          currentOccurredAt - previousOccurredAt <= SESSION_UPDATED_DEDUPE_WINDOW_MS
-        ) {
+        if (previousEvent) {
           exactEventIndexes.delete(createEventDeduplicationKey(previousEvent))
-          deduped[recentIndex] = event
-          exactEventIndexes.set(exactKey, recentIndex)
-          continue
         }
+
+        deduped[logicalIndex] = event
+        exactEventIndexes.set(exactKey, logicalIndex)
+        continue
       }
 
-      recentSessionUpdatedIndexes.set(recentKey, deduped.length)
+      logicalSessionUpdatedIndexes.set(logicalGroupKey, deduped.length)
     }
 
     exactEventIndexes.set(exactKey, deduped.length)
@@ -494,24 +499,46 @@ function createSessionStartedDeduplicationKey(event: NormalizedEvent): string {
   return [event.connectorId, event.subjectId, JSON.stringify(event.payload)].join('|')
 }
 
-function createSessionUpdatedDeduplicationKey(
-  event: NormalizedEvent,
-  dedupeFingerprint: string,
-): string {
-  return [
-    event.connectorId,
-    event.subjectId,
-    JSON.stringify(event.payload),
-    dedupeFingerprint,
-  ].join('|')
+function inferEventKind(turnOp: string | null): EventKind {
+  return turnOp === 'user_turn' ? EventKind.SessionUpdated : EventKind.SessionStarted
 }
 
-function normalizeLogLineForDeduplication(line: string): string {
-  return line
-    .replace(/^\d{4}-\d{2}-\d{2}T[^ ]+\s+/, '')
-    .replace(/\bthread(?:_id|\.id)=[0-9a-f-]+\b/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim()
+function matchTurnOperation(line: string): string | null {
+  const codexOp = matchValue(line, /codex\.op=(?:"([^"]+)"|([^\s]+))/i)
+
+  if (codexOp !== null) {
+    return codexOp
+  }
+
+  const dispatchOp = matchValue(line, /op\.dispatch\.([a-z0-9_.-]+)/i)
+
+  if (dispatchOp !== null) {
+    return dispatchOp
+  }
+
+  return null
+}
+
+function createLogicalGroupKey(
+  threadId: string | null,
+  submissionId: string | null,
+  turnId: string | null,
+  turnOp: string | null,
+): string | null {
+  if (threadId === null || turnOp !== 'user_turn') {
+    return null
+  }
+
+  if (submissionId === null && turnId === null) {
+    return null
+  }
+
+  return [
+    `thread:${threadId}`,
+    `submission:${submissionId ?? 'none'}`,
+    `turn:${turnId ?? 'none'}`,
+    `op:${turnOp}`,
+  ].join('|')
 }
 
 function formatPromptAsTitle(text: string): string {
@@ -593,7 +620,20 @@ function toTitleWord(word: string, index: number, totalWords: number): string {
 
 function matchValue(text: string, pattern: RegExp): string | null {
   const match = pattern.exec(text)
-  return match?.[1] ?? null
+
+  if (!match) {
+    return null
+  }
+
+  for (let index = 1; index < match.length; index += 1) {
+    const value = match[index]
+
+    if (value !== undefined) {
+      return value
+    }
+  }
+
+  return null
 }
 
 function matchBoolean(text: string, pattern: RegExp): boolean | null {
