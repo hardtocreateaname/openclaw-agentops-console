@@ -186,6 +186,30 @@ describe('openclaw sources', () => {
     expect(events.map((event) => event.payload.submissionId)).toEqual(['sub-002', 'sub-001'])
     expect(events.map((event) => event.payload.turnId)).toEqual(['turn-002', 'turn-001'])
   })
+
+  it('preserves low-signal REAL-mode operations in payloads for downstream feed classification', async () => {
+    const config = await createSourcesFixture({
+      logLines: [
+        '2026-03-22T12:01:00.000Z INFO thread.id=real-thread-001 codex.op="list_skills" session_init.is_subagent=false',
+        '2026-03-22T12:01:01.000Z INFO thread.id=real-thread-001 codex.op="exec_approval" session_init.is_subagent=false',
+        '2026-03-22T12:01:02.000Z INFO thread.id=real-thread-001 codex.op="add_to_history" session_init.is_subagent=false',
+      ],
+    })
+
+    const events = await listOpenClawEventSnapshots(config)
+
+    expect(events).toHaveLength(3)
+    expect(events.map((event) => event.payload.turnOp)).toEqual([
+      'add_to_history',
+      'exec_approval',
+      'list_skills',
+    ])
+    expect(events.map((event) => event.kind)).toEqual([
+      EventKind.SessionStarted,
+      EventKind.SessionStarted,
+      EventKind.SessionStarted,
+    ])
+  })
 })
 
 async function createSourcesFixture(input: {

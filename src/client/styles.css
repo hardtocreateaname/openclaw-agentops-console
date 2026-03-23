@@ -341,8 +341,37 @@ select {
   gap: 12px;
 }
 
+.event-feed__toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.event-feed__summary,
+.event-card__meta {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.event-feed__toggle {
+  border: 1px solid var(--surface-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text-strong);
+  padding: 8px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
 .event-card {
   padding: 16px;
+}
+
+.event-card--noisy {
+  background: rgba(255, 255, 255, 0.54);
 }
 
 .event-card__header {
