@@ -292,9 +292,9 @@ function parseLogLine(line: string): ParsedLogLine | null {
     return null
   }
 
-  const threadId = matchValue(line, /thread(?:_id|\.id)=(?:"([^"]+)"|([^\s]+))/i)
-  const submissionId = matchValue(line, /submission(?:_id|\.id)=(?:"([^"]+)"|([^\s]+))/i)
-  const turnId = matchValue(line, /turn(?:_id|\.id)=(?:"([^"]+)"|([^\s]+))/i)
+  const threadId = matchCanonicalLogId(line, /thread(?:_id|\.id)=(?:"([^"]+)"|([^\s]+))/i)
+  const submissionId = matchCanonicalLogId(line, /submission(?:_id|\.id)=(?:"([^"]+)"|([^\s]+))/i)
+  const turnId = matchCanonicalLogId(line, /turn(?:_id|\.id)=(?:"([^"]+)"|([^\s]+))/i)
   const turnOp = matchTurnOperation(line)
 
   return {
@@ -634,6 +634,17 @@ function matchValue(text: string, pattern: RegExp): string | null {
   }
 
   return null
+}
+
+function matchCanonicalLogId(text: string, pattern: RegExp): string | null {
+  const value = matchValue(text, pattern)
+
+  if (value === null) {
+    return null
+  }
+
+  const canonicalIdMatch = /^[A-Za-z0-9][A-Za-z0-9._:-]*/.exec(value)
+  return canonicalIdMatch?.[0] ?? null
 }
 
 function matchBoolean(text: string, pattern: RegExp): boolean | null {

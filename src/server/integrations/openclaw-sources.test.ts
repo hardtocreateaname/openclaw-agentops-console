@@ -144,6 +144,48 @@ describe('openclaw sources', () => {
     ])
     expect(events.map((event) => event.payload.turnId)).toEqual(['turn-002', 'turn-001'])
   })
+
+  it('cleans canonical REAL-mode thread and turn identifiers before building session subjects', async () => {
+    const config = await createSourcesFixture({
+      logLines: [
+        '2026-03-22T12:01:00.000Z INFO thread.id=real-thread-001,trace_id=trace-999 submission.id=sub-001,span_id=span-111 turn.id=turn-001] codex.op="user_turn" session_init.is_subagent=false',
+        '2026-03-22T12:01:02.500Z INFO thread.id=real-thread-001,trace_id=trace-999 submission.id=sub-001,span_id=span-111 turn.id=turn-001] op.dispatch.user_turn session_init.is_subagent=false',
+      ],
+    })
+
+    const events = await listOpenClawEventSnapshots(config)
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      subjectId: 'sessions:real-thread-001',
+      sessionId: 'sessions:real-thread-001',
+      payload: {
+        submissionId: 'sub-001',
+        turnId: 'turn-001',
+        turnOp: 'user_turn',
+      },
+    })
+  })
+
+  it('keeps recent turn-context grouping behavior with cleaned REAL-mode identifiers', async () => {
+    const config = await createSourcesFixture({
+      logLines: [
+        '2026-03-22T12:01:00.000Z INFO thread.id=real-thread-001,trace_id=trace-999 submission.id=sub-001,span_id=span-111 turn.id=turn-001] codex.op="user_turn" session_init.is_subagent=false',
+        '2026-03-22T12:01:00.700Z INFO thread.id=real-thread-001,trace_id=trace-999 submission.id=sub-001,span_id=span-111 turn.id=turn-001] op.dispatch.user_turn session_init.is_subagent=false',
+        '2026-03-22T12:01:04.200Z INFO thread.id=real-thread-001,trace_id=trace-999 submission.id=sub-002,span_id=span-222 turn.id=turn-002] codex.op="user_turn" session_init.is_subagent=false',
+      ],
+    })
+
+    const events = await listOpenClawEventSnapshots(config)
+
+    expect(events).toHaveLength(2)
+    expect(events.map((event) => event.subjectId)).toEqual([
+      'sessions:real-thread-001',
+      'sessions:real-thread-001',
+    ])
+    expect(events.map((event) => event.payload.submissionId)).toEqual(['sub-002', 'sub-001'])
+    expect(events.map((event) => event.payload.turnId)).toEqual(['turn-002', 'turn-001'])
+  })
 })
 
 async function createSourcesFixture(input: {
