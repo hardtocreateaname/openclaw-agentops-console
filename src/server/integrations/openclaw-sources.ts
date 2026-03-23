@@ -9,6 +9,10 @@ const DEFAULT_HISTORY_RELATIVE_PATH = ['.codex', 'history.jsonl']
 const DEFAULT_TUI_LOG_RELATIVE_PATH = ['.codex', 'log', 'codex-tui.log']
 const DEFAULT_VERSION_RELATIVE_PATH = ['.codex', 'version.json']
 const MAX_EVENT_SNAPSHOTS = 50
+const SESSION_LABEL_MAX_CHARS = 48
+const PROMPT_PREVIEW_MAX_CHARS = 160
+const RECENT_SESSION_WINDOW_MS = 15 * 60 * 1000
+const STALE_SESSION_WINDOW_MS = 6 * 60 * 60 * 1000
 
 export interface OpenClawSourcesConfig {
   historyPath: string
@@ -69,6 +73,12 @@ interface ParsedLogLine {
   line: string
 }
 
+interface SessionSnapshotState {
+  freshness: 'recent' | 'stale' | 'archived'
+  lifecycle: ConnectorUnitLifecycle
+  summary: string
+}
+
 export function createDefaultOpenClawSourcesConfig(): OpenClawSourcesConfig {
   const home = os.homedir()
 
@@ -98,11 +108,14 @@ export async function listOpenClawSessions(
     .map((entry) => {
       const lastSeenAt = toIsoTimestamp(entry.ts)
       const workspace = matchWorkspace(entry.text)
+      const snapshotState = inferSessionSnapshotState(entry.ts)
+      const promptPreview = summarizePromptPreview(entry.text)
+      const sessionLabel = summarizeSessionLabel(entry.text)
 
       return {
         sourceId: entry.session_id,
-        name: summarizePrompt(entry.text),
-        lifecycle: inferLifecycleFromTimestamp(entry.ts),
+        name: sessionLabel,
+        lifecycle: snapshotState.lifecycle,
         lastSeenAt,
         lastProgressAt: lastSeenAt,
         latencyMs: null,
@@ -111,8 +124,11 @@ export async function listOpenClawSessions(
           provider: ModelProvider.OpenAI,
           model: 'gpt-5.4',
           workspace,
-          promptPreview: summarizePrompt(entry.text),
+          promptPreview,
+          promptLabel: sessionLabel,
           promptChars: entry.text.length,
+          snapshotFreshness: snapshotState.freshness,
+          snapshotSummary: snapshotState.summary,
           sourceKind: 'codex-history',
         },
       }
@@ -192,9 +208,8 @@ export async function listOpenClawEventSnapshots(
 ): Promise<NormalizedEvent[]> {
   const logLines = await readParsedLogLines(config.tuiLogPath)
 
-  return logLines
+  const events = logLines
     .filter((line) => line.threadId !== null)
-    .slice(-MAX_EVENT_SNAPSHOTS)
     .map((line, index) => {
       const subjectId = `sessions:${line.threadId!}`
       const kind =
@@ -216,7 +231,10 @@ export async function listOpenClawEventSnapshots(
         },
       }
     })
+
+  return dedupeEventSnapshots(events)
     .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt))
+    .slice(0, MAX_EVENT_SNAPSHOTS)
 }
 
 async function readHistoryEntries(historyPath: string): Promise<HistoryEntry[]> {
@@ -280,17 +298,49 @@ async function readVersion(versionPath: string): Promise<VersionEntry | null> {
   }
 }
 
-function summarizePrompt(text: string): string {
+function summarizeSessionLabel(text: string): string {
+  const normalized = normalizePromptText(text)
+
+  if (!normalized) {
+    return 'OpenClaw session'
+  }
+
+  const sentence = normalized.split(/[.!?](?:\s|$)/, 1)[0] ?? normalized
+  const clause = sentence.split(/[;:]/, 1)[0] ?? sentence
+  const compact = clause.replace(/\s+/g, ' ').trim()
+
+  return truncateText(compact || normalized, SESSION_LABEL_MAX_CHARS)
+}
+
+function summarizePromptPreview(text: string): string {
+  const normalized = normalizePromptText(text)
+
+  if (!normalized) {
+    return 'OpenClaw session'
+  }
+
+  return truncateText(normalized, PROMPT_PREVIEW_MAX_CHARS)
+}
+
+function normalizePromptText(text: string): string {
   const firstLine = text
     .split('\n')
     .map((line) => line.trim())
     .find((line) => line.length > 0)
 
   if (!firstLine) {
-    return 'OpenClaw session'
+    return ''
   }
 
-  return firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine
+  return firstLine.replace(/\s+/g, ' ').trim()
+}
+
+function truncateText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value
+  }
+
+  return `${value.slice(0, maxChars - 3).trimEnd()}...`
 }
 
 function matchWorkspace(text: string): string | null {
@@ -299,6 +349,32 @@ function matchWorkspace(text: string): string | null {
 
 function inferLifecycleFromTimestamp(unixTimestampSeconds: number): ConnectorUnitLifecycle {
   return inferLifecycleFromDate(new Date(unixTimestampSeconds * 1000))
+}
+
+function inferSessionSnapshotState(unixTimestampSeconds: number): SessionSnapshotState {
+  const ageMs = Date.now() - unixTimestampSeconds * 1000
+
+  if (ageMs < RECENT_SESSION_WINDOW_MS) {
+    return {
+      freshness: 'recent',
+      lifecycle: 'waiting',
+      summary: 'Recent history snapshot from the latest user turn',
+    }
+  }
+
+  if (ageMs < STALE_SESSION_WINDOW_MS) {
+    return {
+      freshness: 'stale',
+      lifecycle: 'completed',
+      summary: 'Historical snapshot with no recent live activity signal',
+    }
+  }
+
+  return {
+    freshness: 'archived',
+    lifecycle: 'completed',
+    summary: 'Archived history snapshot with no current live activity signal',
+  }
 }
 
 function inferLifecycleFromDate(value: Date): ConnectorUnitLifecycle {
@@ -317,6 +393,26 @@ function inferLifecycleFromDate(value: Date): ConnectorUnitLifecycle {
 
 function toIsoTimestamp(unixTimestampSeconds: number): string {
   return new Date(unixTimestampSeconds * 1000).toISOString()
+}
+
+function dedupeEventSnapshots(events: NormalizedEvent[]): NormalizedEvent[] {
+  const deduped = new Map<string, NormalizedEvent>()
+
+  for (const event of events) {
+    deduped.set(createEventDeduplicationKey(event), event)
+  }
+
+  return [...deduped.values()]
+}
+
+function createEventDeduplicationKey(event: NormalizedEvent): string {
+  return [
+    event.connectorId,
+    event.subjectId,
+    event.kind,
+    event.occurredAt,
+    JSON.stringify(event.payload),
+  ].join('|')
 }
 
 function matchValue(text: string, pattern: RegExp): string | null {

@@ -1,8 +1,9 @@
 import request from 'supertest'
 import { describe, expect, it } from 'vitest'
 
-import { ActionKind, ActionStatus, AgentStatus, EventKind } from '../../shared/types'
+import { ActionKind, ActionStatus, AgentStatus, EventKind, ModelProvider } from '../../shared/types'
 import { createApp } from '../app'
+import { toConnectorQualifiedId, type ConnectorAdapter } from '../connectors/types'
 import { DEFAULT_POLICY_LAYERS } from '../config'
 import { MemoryPolicyStore } from '../store/policy-store'
 
@@ -50,6 +51,9 @@ describe('agents routes', () => {
 
     expect(response.body.data).toEqual(
       expect.objectContaining({
+        id: 'subagents:subagent-001',
+        status: AgentStatus.Running,
+        statusSummary: 'Live activity observed',
         agent: expect.objectContaining({
           id: 'subagents:subagent-001',
           sessionId: 'sessions:sess-001',
@@ -58,6 +62,56 @@ describe('agents routes', () => {
         lastProgressAt: '2026-03-21T23:59:50.000Z',
       }),
     )
+  })
+
+  it('returns stale session snapshots as offline while preserving the nested agent resource', async () => {
+    const connector: ConnectorAdapter = {
+      id: 'sessions',
+      displayName: 'OpenClaw Sessions',
+      async listUnits() {
+        return [
+          {
+            id: toConnectorQualifiedId('sessions', 'sess-stale'),
+            connectorId: 'sessions',
+            unitType: 'session',
+            name: 'Review archived state',
+            lifecycle: 'completed',
+            lastSeenAt: '2026-03-20T10:00:00.000Z',
+            lastProgressAt: '2026-03-20T10:00:00.000Z',
+            latencyMs: null,
+            fallbackActive: false,
+            controllable: true,
+            metadata: {
+              provider: ModelProvider.OpenAI,
+              model: 'gpt-5.4',
+              snapshotFreshness: 'archived',
+            },
+          },
+        ]
+      },
+    }
+
+    const app = await createApp({
+      connectors: [connector],
+      now: () => '2026-03-22T00:00:00.000Z',
+      policyStore: new MemoryPolicyStore(DEFAULT_POLICY_LAYERS),
+    })
+
+    const response = await request(app).get('/api/agents').expect(200)
+
+    expect(response.body.data).toEqual([
+      expect.objectContaining({
+        id: 'sessions:sess-stale',
+        connectorId: 'sessions',
+        status: AgentStatus.Offline,
+        snapshotFreshness: 'archived',
+        statusSummary: 'Archived history snapshot',
+        agent: expect.objectContaining({
+          id: 'sessions:sess-stale',
+          status: AgentStatus.Offline,
+        }),
+      }),
+    ])
   })
 
   it('accepts a control action for controllable agents and emits action events', async () => {

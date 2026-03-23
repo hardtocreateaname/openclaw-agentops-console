@@ -24,12 +24,24 @@ const actionRequestSchema = z
   .strict()
 
 export interface AgentResponseResource {
+  id: AgentUnit['id']
+  connectorId: AgentUnit['connectorId']
+  sessionId: AgentUnit['sessionId']
+  name: AgentUnit['name']
+  model: AgentUnit['model']
+  provider: AgentUnit['provider']
+  status: AgentUnit['status']
+  capabilities: AgentUnit['capabilities']
+  lastSeenAt: AgentUnit['lastSeenAt']
+  metadata: AgentUnit['metadata']
   agent: AgentUnit
   unitType: string
   controllable: boolean
   lastProgressAt: string | null
   latencyMs: number | null
   fallbackActive: boolean
+  snapshotFreshness: string | null
+  statusSummary: string
   health: ReturnType<typeof evaluateHealth>
 }
 
@@ -138,27 +150,33 @@ function toAgentResource(
   unit: ConnectorUnitSnapshot,
   now: () => string,
 ): AgentResponseResource {
-  return {
-    agent: {
-      id: unit.id,
-      connectorId: unit.connectorId,
-      sessionId: getSessionId(unit),
-      name: unit.name,
-      model: typeof unit.metadata.model === 'string' ? unit.metadata.model : 'fixture:unknown',
-      provider: toModelProvider(unit.metadata.provider),
-      status: toAgentStatus(unit),
-      capabilities: toCapabilities(unit),
-      lastSeenAt: unit.lastSeenAt,
-      metadata: {
-        ...unit.metadata,
-        unitType: unit.unitType,
-      },
+  const agent: AgentUnit = {
+    id: unit.id,
+    connectorId: unit.connectorId,
+    sessionId: getSessionId(unit),
+    name: unit.name,
+    model: typeof unit.metadata.model === 'string' ? unit.metadata.model : 'fixture:unknown',
+    provider: toModelProvider(unit.metadata.provider),
+    status: toAgentStatus(unit),
+    capabilities: toCapabilities(unit),
+    lastSeenAt: unit.lastSeenAt,
+    metadata: {
+      ...unit.metadata,
+      unitType: unit.unitType,
     },
+  }
+  const snapshotFreshness = getSnapshotFreshness(unit)
+
+  return {
+    ...agent,
+    agent,
     unitType: unit.unitType,
     controllable: unit.controllable,
     lastProgressAt: unit.lastProgressAt,
     latencyMs: unit.latencyMs,
     fallbackActive: unit.fallbackActive,
+    snapshotFreshness,
+    statusSummary: describeStatus(unit, snapshotFreshness),
     health: evaluateHealth({
       unit,
       now: now(),
@@ -177,6 +195,14 @@ function toAgentStatus(unit: ConnectorUnitSnapshot): AgentStatus {
 
   if (unit.fallbackActive) {
     return AgentStatus.Blocked
+  }
+
+  if (unit.unitType === 'session') {
+    const freshness = getSnapshotFreshness(unit)
+
+    if (freshness === 'stale' || freshness === 'archived') {
+      return AgentStatus.Offline
+    }
   }
 
   if (unit.lifecycle === 'running') {
@@ -222,4 +248,40 @@ function toModelProvider(value: unknown): ModelProvider {
 
 function getSessionId(unit: ConnectorUnitSnapshot): string | null {
   return typeof unit.metadata.sessionId === 'string' ? unit.metadata.sessionId : null
+}
+
+function getSnapshotFreshness(unit: ConnectorUnitSnapshot): string | null {
+  return typeof unit.metadata.snapshotFreshness === 'string' ? unit.metadata.snapshotFreshness : null
+}
+
+function describeStatus(unit: ConnectorUnitSnapshot, snapshotFreshness: string | null): string {
+  if (unit.fallbackActive) {
+    return 'Fallback fixture snapshot'
+  }
+
+  if (unit.unitType === 'session' && snapshotFreshness === 'recent') {
+    return 'Recent history snapshot'
+  }
+
+  if (unit.unitType === 'session' && snapshotFreshness === 'stale') {
+    return 'Historical snapshot; no recent live activity signal'
+  }
+
+  if (unit.unitType === 'session' && snapshotFreshness === 'archived') {
+    return 'Archived history snapshot'
+  }
+
+  if (unit.lifecycle === 'running') {
+    return 'Live activity observed'
+  }
+
+  if (unit.lifecycle === 'waiting') {
+    return 'Awaiting new activity'
+  }
+
+  if (unit.lifecycle === 'failed') {
+    return 'Blocked or failed'
+  }
+
+  return 'No active work observed'
 }
